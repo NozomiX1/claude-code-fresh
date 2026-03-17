@@ -1,0 +1,10 @@
+{
+  "name": "cc-fresh",
+  "version": "1.0.0",
+  "description": "Auto-detect and update Claude Code plugins with smart notifications",
+  "author": {
+    "name": "nozomi"
+  },
+  "license": "MIT",
+  "keywords": ["update", "plugins", "marketplace", "auto-update"]
+}

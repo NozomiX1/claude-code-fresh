@@ -1,0 +1,17 @@
+{
+  "name": "cc-fresh-marketplace",
+  "owner": {
+    "name": "nozomi"
+  },
+  "metadata": {
+    "description": "cc-fresh: Auto-update detection and management for Claude Code plugins"
+  },
+  "plugins": [
+    {
+      "name": "cc-fresh",
+      "source": "./plugin",
+      "description": "Auto-detect and update Claude Code plugins with smart notifications",
+      "version": "1.0.0"
+    }
+  ]
+}
