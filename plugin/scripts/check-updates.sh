@@ -27,13 +27,21 @@ get_remote_branch() {
   echo "origin/${branch}"
 }
 
-# Read plugin version from the remote ref's marketplace.json (after git fetch)
-get_remote_plugin_version() {
-  local mkt_dir="$1" plugin_name="$2" remote_ref="$3"
-  local tmp_mkt_json
-  tmp_mkt_json="${TMPDIR_WORK}/remote_mkt_$$.json"
-  git -C "$mkt_dir" show "${remote_ref}:.claude-plugin/marketplace.json" > "$tmp_mkt_json" 2>/dev/null || return
-  python3 - "$tmp_mkt_json" "$plugin_name" << 'PYEOF'
+# Cache the remote marketplace.json per marketplace (avoid repeated git show)
+# Sets REMOTE_MKT_JSON_FILE to the cached file path
+cache_remote_marketplace_json() {
+  local mkt_dir="$1" remote_ref="$2" mkt_name="$3"
+  REMOTE_MKT_JSON_FILE="${TMPDIR_WORK}/remote_mkt_${mkt_name}.json"
+  if [ ! -f "$REMOTE_MKT_JSON_FILE" ]; then
+    git -C "$mkt_dir" show "${remote_ref}:.claude-plugin/marketplace.json" > "$REMOTE_MKT_JSON_FILE" 2>/dev/null || return 1
+  fi
+}
+
+# Check if plugin exists in remote marketplace.json and get its version
+# Output: "FOUND:<version>" if found (version may be empty), "NOTFOUND" if not found
+get_remote_plugin_info() {
+  local mkt_json_file="$1" plugin_name="$2"
+  python3 - "$mkt_json_file" "$plugin_name" << 'PYEOF'
 import json, sys
 mkt_path = sys.argv[1]
 plugin_name = sys.argv[2]
@@ -43,13 +51,16 @@ plugins = d.get('plugins', [])
 if isinstance(plugins, list):
     for p in plugins:
         if p.get('name') == plugin_name:
-            print(p.get('version', ''))
-            break
+            ver = p.get('version', '')
+            print(f"FOUND:{ver}")
+            sys.exit()
 elif isinstance(plugins, dict):
-    p = plugins.get(plugin_name, {})
-    print(p.get('version', ''))
+    if plugin_name in plugins:
+        ver = plugins[plugin_name].get('version', '')
+        print(f"FOUND:{ver}")
+        sys.exit()
+print("NOTFOUND")
 PYEOF
-  rm -f "$tmp_mkt_json"
 }
 
 # Iterate over known marketplaces
@@ -90,31 +101,50 @@ get_known_marketplaces | while IFS= read -r mkt_name; do
     fi
   fi
 
+  # Cache remote marketplace.json once per marketplace
+  if ! cache_remote_marketplace_json "$mkt_dir" "$remote_ref" "$mkt_name"; then
+    echo "{\"marketplace\": \"${mkt_name}\", \"message\": \"could not read remote marketplace.json\"}" >> "$ERRORS_FILE"
+    continue
+  fi
+
   # Check each installed plugin from this marketplace
   get_installed_plugins_for_marketplace "$mkt_name" | while IFS="	" read -r pname pver psha ppath; do
     [ -z "$pname" ] && continue
 
-    # Read version from remote ref (fetched content, not local working tree)
-    new_ver=$(get_remote_plugin_version "$mkt_dir" "$pname" "$remote_ref")
+    # Check if plugin exists in remote marketplace.json and get version
+    plugin_info=$(get_remote_plugin_info "$REMOTE_MKT_JSON_FILE" "$pname")
 
-    if [ -z "$new_ver" ]; then
+    if [ "$plugin_info" = "NOTFOUND" ]; then
       echo "{\"marketplace\": \"${mkt_name}\", \"message\": \"plugin ${pname} not found in marketplace.json\"}" >> "$ERRORS_FILE"
       continue
     fi
 
-    if [ "$new_ver" != "$pver" ]; then
-      # Version changed - update available
+    # Extract version (may be empty for plugins without version in marketplace.json)
+    new_ver="${plugin_info#FOUND:}"
+
+    # Case 1: Both have version strings and they differ → version update
+    if [ -n "$new_ver" ] && [ "$new_ver" != "$pver" ]; then
       echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"installed_version\": \"${pver}\", \"available_version\": \"${new_ver}\"}" >> "$UPDATES_FILE"
-    elif [ -n "$psha" ]; then
-      # Same version, check commit SHA against remote HEAD
+      continue
+    fi
+
+    # Case 2: Check commit SHA for behind-commits detection
+    if [ -n "$psha" ]; then
       remote_sha=$(git -C "$mkt_dir" rev-parse "$remote_ref" 2>/dev/null || echo "")
       if [ -n "$remote_sha" ] && [ "$remote_sha" != "$psha" ]; then
         commits_behind=$(git -C "$mkt_dir" rev-list --count "${psha}..${remote_sha}" 2>/dev/null || echo "0")
-        echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"installed_version\": \"${pver}\", \"available_version\": \"${pver}\", \"installed_sha\": \"${psha}\", \"remote_sha\": \"${remote_sha}\", \"commits_behind\": ${commits_behind}}" >> "$UPDATES_FILE"
+        if [ "$commits_behind" -gt 0 ] 2>/dev/null; then
+          display_new="${new_ver:-${pver}}"
+          display_old="${pver}"
+          echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"installed_version\": \"${display_old}\", \"available_version\": \"${display_new}\", \"installed_sha\": \"${psha}\", \"remote_sha\": \"${remote_sha}\", \"commits_behind\": ${commits_behind}}" >> "$UPDATES_FILE"
+        else
+          echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"version\": \"${pver}\"}" >> "$UPTODATE_FILE"
+        fi
       else
         echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"version\": \"${pver}\"}" >> "$UPTODATE_FILE"
       fi
     else
+      # No SHA, same/matching version → up to date
       echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"version\": \"${pver}\"}" >> "$UPTODATE_FILE"
     fi
   done
