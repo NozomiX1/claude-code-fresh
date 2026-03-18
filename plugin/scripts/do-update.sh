@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # do-update.sh — Execute pending plugin updates from cache.json
 # Reads update cache written by check-updates.sh, pulls repos, copies files.
+# Usage: do-update.sh [--auto-only]
+#   --auto-only: Only update plugins from marketplaces with "auto" policy
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/helpers.sh"
 
 ensure_data_dir
+
+AUTO_ONLY="no"
+if [ "${1:-}" = "--auto-only" ]; then
+  AUTO_ONLY="yes"
+fi
 
 CACHE_FILE="${CC_FRESH_DATA_DIR}/cache.json"
 
@@ -47,7 +54,8 @@ fi
 
 # Process each update
 RESULTS_FILE="${TMPDIR_WORK}/results.txt"
-touch "$RESULTS_FILE"
+UPDATED_PLUGINS="${TMPDIR_WORK}/updated_plugins.txt"
+touch "$RESULTS_FILE" "$UPDATED_PLUGINS"
 
 OK_COUNT=0
 FAIL_COUNT=0
@@ -57,6 +65,14 @@ while IFS="	" read -r plugin_name marketplace_name current_version new_version; 
   [ -z "$plugin_name" ] && continue
 
   label="${plugin_name}@${marketplace_name}"
+
+  # Filter by policy if --auto-only
+  if [ "$AUTO_ONLY" = "yes" ]; then
+    policy=$(get_marketplace_policy "$marketplace_name")
+    if [ "$policy" != "auto" ]; then
+      continue
+    fi
+  fi
 
   # Get marketplace dir
   marketplace_dir=$(get_marketplace_dir "$marketplace_name")
@@ -142,6 +158,7 @@ with open(installed_path, "w") as f:
 PYEOF
 
   echo "OK	${label}	${current_version} -> ${new_version}" >> "$RESULTS_FILE"
+  echo "${plugin_name}	${marketplace_name}	${new_version}" >> "$UPDATED_PLUGINS"
   OK_COUNT=$((OK_COUNT+1))
 
 done < "$UPDATES_LIST"
@@ -158,5 +175,47 @@ if [ "$OK_COUNT" -gt 0 ]; then
   echo "Run /reload-plugins to apply changes."
 fi
 
-# Delete cache.json so next check gets fresh state
-rm -f "$CACHE_FILE"
+# Move successfully updated plugins from "updates" to "up_to_date" in cache.json
+if [ -s "$UPDATED_PLUGINS" ] && [ -f "$CACHE_FILE" ]; then
+  python3 - "$CACHE_FILE" "$UPDATED_PLUGINS" << 'PYEOF'
+import json, sys
+
+cache_path = sys.argv[1]
+updated_path = sys.argv[2]
+
+with open(cache_path) as f:
+    cache = json.load(f)
+
+# Read updated plugin keys
+updated_keys = set()
+with open(updated_path) as f:
+    for line in f:
+        parts = line.strip().split("\t")
+        if len(parts) >= 2:
+            updated_keys.add((parts[0], parts[1]))
+
+remaining_updates = []
+for u in cache.get("updates", []):
+    key = (u.get("name", ""), u.get("marketplace", ""))
+    if key in updated_keys:
+        new_ver = u.get("available_version", u.get("installed_version", ""))
+        cache.setdefault("up_to_date", []).append({
+            "name": u["name"],
+            "marketplace": u["marketplace"],
+            "version": new_ver
+        })
+    else:
+        remaining_updates.append(u)
+
+cache["updates"] = remaining_updates
+
+with open(cache_path, "w") as f:
+    json.dump(cache, f, indent=2)
+    f.write("\n")
+PYEOF
+fi
+
+# Delete cache.json so next check gets fresh state (only for full runs, not --auto-only)
+if [ "$AUTO_ONLY" = "no" ]; then
+  rm -f "$CACHE_FILE"
+fi

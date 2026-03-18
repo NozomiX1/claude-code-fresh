@@ -37,8 +37,9 @@ cache_remote_marketplace_json() {
   fi
 }
 
-# Check if plugin exists in remote marketplace.json and get its version
-# Output: "FOUND:<version>" if found (version may be empty), "NOTFOUND" if not found
+# Check if plugin exists in remote marketplace.json and get its version + source
+# Output: "FOUND:<version>:<source_path>" if found, "NOTFOUND" if not found
+# source_path is the local directory path (e.g., "./plugins/context7") or empty for external
 get_remote_plugin_info() {
   local mkt_json_file="$1" plugin_name="$2"
   python3 - "$mkt_json_file" "$plugin_name" << 'PYEOF'
@@ -48,16 +49,26 @@ plugin_name = sys.argv[2]
 with open(mkt_path) as f:
     d = json.load(f)
 plugins = d.get('plugins', [])
+
+def get_source_path(p):
+    src = p.get('source', '')
+    if isinstance(src, str):
+        return src
+    return ''  # external URL source
+
 if isinstance(plugins, list):
     for p in plugins:
         if p.get('name') == plugin_name:
             ver = p.get('version', '')
-            print(f"FOUND:{ver}")
+            src = get_source_path(p)
+            print(f"FOUND:{ver}:{src}")
             sys.exit()
 elif isinstance(plugins, dict):
     if plugin_name in plugins:
-        ver = plugins[plugin_name].get('version', '')
-        print(f"FOUND:{ver}")
+        p = plugins[plugin_name]
+        ver = p.get('version', '')
+        src = get_source_path(p)
+        print(f"FOUND:{ver}:{src}")
         sys.exit()
 print("NOTFOUND")
 PYEOF
@@ -94,13 +105,6 @@ get_known_marketplaces | while IFS= read -r mkt_name; do
   # Determine remote branch ref
   remote_ref=$(get_remote_branch "$mkt_dir")
 
-  # Auto policy: also pull
-  if [ "$policy" = "auto" ]; then
-    if ! git -C "$mkt_dir" pull --ff-only origin HEAD >/dev/null 2>&1; then
-      log_warn "git pull --ff-only failed for marketplace '$mkt_name'"
-    fi
-  fi
-
   # Cache remote marketplace.json once per marketplace
   if ! cache_remote_marketplace_json "$mkt_dir" "$remote_ref" "$mkt_name"; then
     echo "{\"marketplace\": \"${mkt_name}\", \"message\": \"could not read remote marketplace.json\"}" >> "$ERRORS_FILE"
@@ -119,8 +123,10 @@ get_known_marketplaces | while IFS= read -r mkt_name; do
       continue
     fi
 
-    # Extract version (may be empty for plugins without version in marketplace.json)
-    new_ver="${plugin_info#FOUND:}"
+    # Extract version and source path from "FOUND:<version>:<source_path>"
+    plugin_info_body="${plugin_info#FOUND:}"
+    new_ver="${plugin_info_body%%:*}"
+    plugin_source="${plugin_info_body#*:}"
 
     # Case 1: Both have version strings and they differ → version update
     if [ -n "$new_ver" ] && [ "$new_ver" != "$pver" ]; then
@@ -132,10 +138,29 @@ get_known_marketplaces | while IFS= read -r mkt_name; do
     if [ -n "$psha" ]; then
       remote_sha=$(git -C "$mkt_dir" rev-parse "$remote_ref" 2>/dev/null || echo "")
       if [ -n "$remote_sha" ] && [ "$remote_sha" != "$psha" ]; then
-        commits_behind=$(git -C "$mkt_dir" rev-list --count "${psha}..${remote_sha}" 2>/dev/null || echo "0")
+        # Scope commit count to plugin's directory (not entire marketplace repo)
+        if [ -n "$plugin_source" ]; then
+          commits_behind=$(git -C "$mkt_dir" rev-list --count "${psha}..${remote_sha}" -- "$plugin_source" 2>/dev/null || echo "0")
+        else
+          # External plugin or unknown source — count all commits
+          commits_behind=$(git -C "$mkt_dir" rev-list --count "${psha}..${remote_sha}" 2>/dev/null || echo "0")
+        fi
         if [ "$commits_behind" -gt 0 ] 2>/dev/null; then
-          display_new="${new_ver:-${pver}}"
-          display_old="${pver}"
+          if [ -n "$new_ver" ] && [ "$new_ver" != "$pver" ]; then
+            # Version actually changed (e.g., 10.5.6 → 10.6.0)
+            display_old="${pver}"
+            display_new="$new_ver"
+          else
+            # No version change — show commit SHAs for both
+            display_old="${psha:0:12}"
+            if [ -n "$plugin_source" ]; then
+              latest_plugin_sha=$(git -C "$mkt_dir" rev-list -1 "$remote_ref" -- "$plugin_source" 2>/dev/null || echo "")
+              display_new="${latest_plugin_sha:+${latest_plugin_sha:0:12}}"
+              display_new="${display_new:-${display_old}}"
+            else
+              display_new="${display_old}"
+            fi
+          fi
           echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"installed_version\": \"${display_old}\", \"available_version\": \"${display_new}\", \"installed_sha\": \"${psha}\", \"remote_sha\": \"${remote_sha}\", \"commits_behind\": ${commits_behind}}" >> "$UPDATES_FILE"
         else
           echo "{\"name\": \"${pname}\", \"marketplace\": \"${mkt_name}\", \"version\": \"${pver}\"}" >> "$UPTODATE_FILE"
