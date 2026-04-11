@@ -12,7 +12,7 @@ cc-fresh runs silently on every session start, checks all your installed marketp
 - **Per-plugin scoped diffing** — Counts only commits that affect each specific plugin directory, not the entire marketplace repo
 - **Smart notifications** — Configurable cooldown (default 24h) prevents repeated alerts for the same pending updates
 - **Auto-update mode** — Marketplaces set to `auto` policy pull and apply updates without any interaction
-- **Cache optimization** — Results are cached for 1 hour to avoid redundant git operations across rapid session restarts
+- **Cache optimization** — Results are cached (default 12 hours, configurable) to avoid redundant git operations across rapid session restarts
 - **Version + SHA tracking** — Works with semantic versioned plugins and versionless (commit-based) plugins alike
 
 ## Requirements
@@ -43,32 +43,22 @@ When you start a new Claude Code session, cc-fresh runs the following pipeline:
 Session Start
     │
     ▼
-[Cache fresh?] ── yes ──► Use cached results
-    │ no
+[Cache fresh?] ── yes ──► Use cached results ──► [Auto policy?] ── yes ──► Apply updates
+    │ no                       │                       │ no
+    ▼                          ▼                       ▼
+Fork git fetch               Read cache            [Cooldown expired?] ── yes ──► Print notification
+to background                                         │ no
+(non-blocking)                                        ▼
+    │                                               (silent)
     ▼
-git fetch all marketplaces
-    │
-    ▼
-Compare remote vs installed
-(version strings + commit SHAs)
-    │
-    ▼
-Write cache.json
-    │
-    ▼
-[Any "auto" policy?] ── yes ──► Pull & apply updates
-    │                              │
-    ▼                              ▼
-[Cooldown expired?] ── yes ──► Print notification
-    │ no
-    ▼
-  (silent)
+Updates cache for
+next session
 ```
 
-1. **Cache check** — If `cache.json` exists and is less than 1 hour old, skip the git fetch entirely.
+1. **Cache check** — If `cache.json` exists and is within `cache_ttl_hours` (default 12h), use cached results. Otherwise, fork `check-updates.sh` to the background (non-blocking).
 2. **Update detection** — For each installed plugin, compare the installed version/SHA against the remote marketplace state. Commit counts are scoped to each plugin's subdirectory.
-3. **Auto-updates** — Plugins from marketplaces with `auto` policy are pulled and installed immediately. The cache is updated in-place (not deleted) so subsequent checks remain fast.
-4. **Notification** — If there are remaining updates (non-auto marketplaces), a single notification line is printed, subject to cooldown rules.
+3. **Auto-updates** — Plugins from marketplaces with `auto` policy are pulled and installed immediately (only when cache is fresh). The cache is updated in-place so subsequent checks remain fast.
+4. **Notification** — If there are pending updates, a single notification line is printed synchronously, subject to cooldown rules. The background fetch updates the cache for the next session.
 
 ### Notification Cooldown
 
@@ -143,6 +133,7 @@ This file is created automatically on first session start with the following def
 {
   "default": "check",
   "cooldown_hours": 24,
+  "cache_ttl_hours": 12,
   "marketplaces": {}
 }
 ```
@@ -153,6 +144,7 @@ This file is created automatically on first session start with the following def
 |---|---|---|---|
 | `default` | string | `"check"` | Default policy for marketplaces without an explicit override |
 | `cooldown_hours` | number | `24` | Hours between repeated notifications for the same set of updates |
+| `cache_ttl_hours` | number | `12` | Hours before cached check results expire and trigger a background refresh |
 | `marketplaces` | object | `{}` | Per-marketplace policy overrides (sparse — only explicit overrides are stored) |
 
 ### Policies
@@ -191,10 +183,10 @@ cc-fresh/
 │   │   ├── session-start.sh     # Entry point — orchestrates check + auto-update
 │   │   ├── check-updates.sh     # Core detection — git fetch + version comparison
 │   │   └── do-update.sh         # Applies updates — git pull + file copy
-│   └── skills/
-│       ├── check/SKILL.md       # /cc-fresh:check command
-│       ├── update/SKILL.md      # /cc-fresh:update command
-│       └── config/SKILL.md      # /cc-fresh:config command
+│   └── commands/
+│       ├── check.md             # /cc-fresh:check command
+│       ├── update.md            # /cc-fresh:update command
+│       └── config.md            # /cc-fresh:config command
 ├── tests/
 │   ├── setup-test-env.sh        # Test fixture generator
 │   ├── test-helpers.sh          # Unit tests for helpers.sh
@@ -229,7 +221,7 @@ cc-fresh stores runtime data in `~/.claude/cc-fresh/`:
 | File | Purpose |
 |---|---|
 | `config.json` | User configuration (policies, cooldown) |
-| `cache.json` | Cached update check results (TTL: 1 hour) |
+| `cache.json` | Cached update check results (TTL: configurable, default 12h) |
 | `notify-state.json` | Last notification timestamp and hash (for cooldown) |
 
 ## License

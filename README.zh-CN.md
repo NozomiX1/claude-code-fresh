@@ -10,7 +10,7 @@ cc-fresh 在每次会话启动时静默运行，检查所有已安装的 marketp
 - **按插件目录精确计数** — 仅统计影响到具体插件目录的 commit，而非整个 marketplace 仓库
 - **智能通知** — 可配置冷却时间（默认 24 小时），避免对同一批待更新插件重复提醒
 - **自动更新模式** — 设为 `auto` 策略的 marketplace 无需任何交互即可拉取并应用更新
-- **缓存优化** — 结果缓存 1 小时，避免快速重启会话时重复执行 git 操作
+- **缓存优化** — 结果缓存（默认 12 小时，可配置），避免快速重启会话时重复执行 git 操作
 - **版本号 + SHA 双轨追踪** — 同时支持语义化版本号和无版本号（基于 commit）的插件
 
 ## 环境要求
@@ -41,32 +41,22 @@ cc-fresh 在每次会话启动时静默运行，检查所有已安装的 marketp
 会话启动
     │
     ▼
-[缓存是否有效？] ── 是 ──► 使用缓存结果
-    │ 否
+[缓存是否有效？] ── 是 ──► 使用缓存结果 ──► [有 auto 策略？] ── 是 ──► 应用更新
+    │ 否                         │                     │ 否
+    ▼                            ▼                     ▼
+后台 fork                     读取缓存             [冷却时间已过？] ── 是 ──► 输出通知
+git fetch                                             │ 否
+（不阻塞）                                             ▼
+    │                                               （静默）
     ▼
-git fetch 所有 marketplace
-    │
-    ▼
-对比远端 vs 本地安装
-（版本号 + commit SHA）
-    │
-    ▼
-写入 cache.json
-    │
-    ▼
-[有 "auto" 策略？] ── 是 ──► 拉取并应用更新
-    │                            │
-    ▼                            ▼
-[冷却时间已过？] ── 是 ──► 输出通知
-    │ 否
-    ▼
- （静默）
+更新缓存供
+下次使用
 ```
 
-1. **缓存检查** — 如果 `cache.json` 存在且不超过 1 小时，跳过 git fetch。
+1. **缓存检查** — 如果 `cache.json` 存在且在 `cache_ttl_hours`（默认 12h）内，使用缓存结果。否则后台 fork `check-updates.sh`（不阻塞启动）。
 2. **更新检测** — 对每个已安装插件，将本地版本/SHA 与远端 marketplace 状态比较。commit 计数精确到每个插件的子目录。
-3. **自动更新** — `auto` 策略的 marketplace 中的插件会立即拉取并安装，缓存就地更新（而非删除），保证后续检查仍然高效。
-4. **通知** — 如果还有剩余更新（非 auto 的 marketplace），输出一行通知，受冷却规则约束。
+3. **自动更新** — `auto` 策略的 marketplace 中的插件会立即拉取并安装（仅在缓存有效时执行）。缓存就地更新，保证后续检查仍然高效。
+4. **通知** — 如果有待更新的插件，同步输出一行通知，受冷却规则约束。后台 fetch 更新缓存供下次会话使用。
 
 ### 通知冷却机制
 
@@ -142,6 +132,7 @@ Available policies:
 {
   "default": "check",
   "cooldown_hours": 24,
+  "cache_ttl_hours": 12,
   "marketplaces": {}
 }
 ```
@@ -152,6 +143,7 @@ Available policies:
 |---|---|---|---|
 | `default` | string | `"check"` | 未设置显式覆盖的 marketplace 使用的默认策略 |
 | `cooldown_hours` | number | `24` | 对同一批更新重复通知的间隔小时数 |
+| `cache_ttl_hours` | number | `12` | 缓存过期时间（小时），过期后后台刷新 |
 | `marketplaces` | object | `{}` | 按 marketplace 设置的策略覆盖（稀疏存储，仅记录显式覆盖） |
 
 ### 策略说明
@@ -190,10 +182,10 @@ cc-fresh/
 │   │   ├── session-start.sh     # 入口 — 编排检查 + 自动更新流程
 │   │   ├── check-updates.sh     # 核心检测 — git fetch + 版本比较
 │   │   └── do-update.sh         # 应用更新 — git pull + 文件复制
-│   └── skills/
-│       ├── check/SKILL.md       # /cc-fresh:check 命令
-│       ├── update/SKILL.md      # /cc-fresh:update 命令
-│       └── config/SKILL.md      # /cc-fresh:config 命令
+│   └── commands/
+│       ├── check.md             # /cc-fresh:check 命令
+│       ├── update.md            # /cc-fresh:update 命令
+│       └── config.md            # /cc-fresh:config 命令
 ├── tests/
 │   ├── setup-test-env.sh        # 测试夹具生成器
 │   ├── test-helpers.sh          # helpers.sh 单元测试
@@ -229,7 +221,7 @@ cc-fresh 的运行时数据存储在 `~/.claude/cc-fresh/`：
 | 文件 | 用途 |
 |---|---|
 | `config.json` | 用户配置（策略、冷却时间） |
-| `cache.json` | 缓存的更新检查结果（TTL: 1 小时） |
+| `cache.json` | 缓存的更新检查结果（TTL: 可配置，默认 12 小时） |
 | `notify-state.json` | 上次通知的时间戳和哈希值（用于冷却判断） |
 
 ## 许可证
