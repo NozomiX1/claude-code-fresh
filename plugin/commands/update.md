@@ -1,9 +1,7 @@
 ---
-name: update
 description: Execute pending plugin updates. Use when user wants to apply available plugin updates.
+allowed-tools: Bash
 ---
-
-# Update Plugins
 
 Execute the update script:
 

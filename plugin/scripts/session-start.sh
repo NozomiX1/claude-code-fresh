@@ -11,7 +11,7 @@ ensure_data_dir
 # Create default config.json if missing
 CONFIG_FILE="${CC_FRESH_DATA_DIR}/config.json"
 if [ ! -f "$CONFIG_FILE" ]; then
-  echo '{"default":"check","cooldown_hours":24,"marketplaces":{}}' > "$CONFIG_FILE"
+  echo '{"default":"check","cooldown_hours":24,"cache_ttl_hours":12,"marketplaces":{}}' > "$CONFIG_FILE"
 fi
 
 NOTIFY_STATE_FILE="${CC_FRESH_DATA_DIR}/notify-state.json"
@@ -30,9 +30,19 @@ except:
 COOLDOWN_MS=$((COOLDOWN_HOURS * 3600 * 1000))
 
 CACHE_FILE="${CC_FRESH_DATA_DIR}/cache.json"
-CACHE_MAX_AGE_MS=$((1 * 3600 * 1000))  # 1 hour
 
-# Check if cache is fresh (< 1 hour old)
+# Read cache_ttl_hours from config (default 12)
+CACHE_TTL_HOURS=$(python3 -c "
+import json, sys
+try:
+    config = json.loads('''$(read_config)''')
+    print(config.get('cache_ttl_hours', 12))
+except:
+    print(12)
+")
+CACHE_MAX_AGE_MS=$((CACHE_TTL_HOURS * 3600 * 1000))
+
+# Check if cache is fresh (within cache_ttl_hours)
 CACHE_FRESH="no"
 if [ -f "$CACHE_FILE" ]; then
   CACHE_AGE=$(python3 -c "
@@ -50,18 +60,19 @@ except:
   fi
 fi
 
-# Only run check if cache is stale or missing
+# If cache is stale or missing, fork check to background (non-blocking)
 if [ "$CACHE_FRESH" = "no" ]; then
-  bash "${SCRIPT_DIR}/check-updates.sh" >/dev/null 2>&1 || true
+  bash "${SCRIPT_DIR}/check-updates.sh" >/dev/null 2>&1 &
+  disown
 fi
 
 if [ ! -f "$CACHE_FILE" ]; then
   exit 0
 fi
 
-# Run auto-updates for "auto" policy marketplaces (updates cache.json in place)
+# Auto-updates only run when cache was fresh (background check hasn't finished yet if stale)
 AUTO_OUTPUT=""
-if [ "$CACHE_FRESH" = "no" ]; then
+if [ "$CACHE_FRESH" = "yes" ]; then
   AUTO_OUTPUT=$(bash "${SCRIPT_DIR}/do-update.sh" --auto-only 2>/dev/null) || true
 fi
 

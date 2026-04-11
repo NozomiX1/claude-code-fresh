@@ -1,13 +1,11 @@
 ---
-name: config
 description: Configure cc-fresh update policies per marketplace. Use when user wants to change auto-update settings, notification cooldown, or marketplace update behavior.
+allowed-tools: Read, Write, AskUserQuestion
 ---
-
-# Configure cc-fresh
 
 Read current config from `~/.claude/cc-fresh/config.json`. If missing, defaults are:
 ```json
-{"default": "check", "cooldown_hours": 24, "marketplaces": {}}
+{"default": "check", "cooldown_hours": 24, "cache_ttl_hours": 12, "marketplaces": {}}
 ```
 
 Also read `~/.claude/plugins/known_marketplaces.json` to list all known marketplace names.
@@ -19,6 +17,7 @@ cc-fresh Configuration:
 
   Default policy: [current default]
   Notification cooldown: [N] hours
+  Cache TTL: [N] hours
 
   Marketplace policies:
     1. marketplace-name    [explicit policy or "(default)"]

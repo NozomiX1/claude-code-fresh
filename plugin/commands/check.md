@@ -1,9 +1,7 @@
 ---
-name: check
 description: Check for available Claude Code plugin updates. Use when user wants to see which plugins have updates, or asks about plugin versions.
+allowed-tools: Bash, Read
 ---
-
-# Check Plugin Updates
 
 Read the cache file at `~/.claude/cc-fresh/cache.json`.
 
