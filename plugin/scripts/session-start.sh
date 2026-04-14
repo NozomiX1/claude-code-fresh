@@ -178,7 +178,17 @@ with open(path, "w") as f:
     json.dump(state, f)
 PYEOF
 
-  echo "$MESSAGES"
+  python3 - "$MESSAGES" << 'PYEOF'
+import json, sys
+msg = sys.argv[1]
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": msg,
+    },
+    "systemMessage": msg,
+}))
+PYEOF
 fi
 
 exit 0
